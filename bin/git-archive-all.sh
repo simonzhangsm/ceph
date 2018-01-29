@@ -1,4 +1,6 @@
-#!/bin/bash -
+#!/usr/bin/env bash 
+
+# set -xe
 #
 # File:        git-archive-all.sh
 #
@@ -33,10 +35,6 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #
 ###############################################################################
-
-# DEBUGGING
-set -e
-set -C # noclobber
 
 # TRAP SIGNALS
 trap 'cleanup' QUIT EXIT

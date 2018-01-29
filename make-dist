@@ -1,4 +1,5 @@
-#!/bin/sh -e
+#!/usr/bin/env bash 
+set -xe
 
 if [ ! -d .git ]; then
     echo "no .git present.  run this from the base dir of the git checkout."
@@ -58,13 +59,17 @@ for spec in ceph.spec.in alpine/APKBUILD.in; do
 done
 ln -s . $outfile
 tar cvf $outfile.version.tar $outfile/src/.git_version $outfile/ceph.spec $outfile/alpine/APKBUILD
-tar --concatenate -f $outfile.both.tar $outfile.version.tar
-tar --concatenate -f $outfile.both.tar $outfile.tar
-mv $outfile.both.tar $outfile.tar
-rm $outfile
-rm -f $outfile.version.tar
+tar cf ${outfile}.boost.tar ${outfile}/src/boost
+tar --concatenate -f ${outfile}.all.tar ${outfile}.version.tar
+tar --concatenate -f ${outfile}.all.tar ${outfile}.boost.tar
+tar --concatenate -f ${outfile}.all.tar ${outfile}.tar
+
+mv ${outfile}.all.tar ${outfile}.tar
+rm ${outfile}
+rm -f ${outfile}.version.tar
+rm -f ${outfile}.boost.tar
 
 echo "compressing..."
-bzip2 -9 $outfile.tar
+bzip2 -9 ${outfile}.tar
 
 echo "done."
