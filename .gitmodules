@@ -48,6 +48,7 @@
 [submodule "src/rocksdb"]
 	path = src/rocksdb
 	url = https://github.com/simonzhangsm/rocksdb
+	branch = simon-v5.9.2
 [submodule "src/spdk"]
 	path = src/spdk
 	url = https://github.com/simonzhangsm/spdk
