@@ -77,7 +77,7 @@ class Plan:
                   self.initial.osdmap.get_crush_version())
         ls.append('# mode %s' % self.mode)
         if len(self.compat_ws) and \
-           '-1' not in self.initial.crush_dump.get('choose_args', {}):
+           not CRUSHMap.have_default_choose_args(self.initial.crush_dump):
             ls.append('ceph osd crush weight-set create-compat')
         for osd, weight in self.compat_ws.iteritems():
             ls.append('ceph osd crush weight-set reweight-compat %s %f' %
@@ -212,13 +212,13 @@ class Module(MgrModule):
             "perm": "rw",
         },
         {
-            "cmd": "balancer eval name=plan,type=CephString,req=false",
-            "desc": "Evaluate data distribution for the current cluster or specific plan",
+            "cmd": "balancer eval name=option,type=CephString,req=false",
+            "desc": "Evaluate data distribution for the current cluster or specific pool or specific plan",
             "perm": "r",
         },
         {
-            "cmd": "balancer eval-verbose name=plan,type=CephString,req=false",
-            "desc": "Evaluate data distribution for the current cluster or specific plan (verbosely)",
+            "cmd": "balancer eval-verbose name=option,type=CephString,req=false",
+            "desc": "Evaluate data distribution for the current cluster or specific pool or specific plan (verbosely)",
             "perm": "r",
         },
         {
@@ -287,17 +287,26 @@ class Module(MgrModule):
             return (0, '', '')
         elif command['prefix'] == 'balancer eval' or command['prefix'] == 'balancer eval-verbose':
             verbose = command['prefix'] == 'balancer eval-verbose'
-            if 'plan' in command:
-                plan = self.plans.get(command['plan'])
+            pools = []
+            if 'option' in command:
+                plan = self.plans.get(command['option'])
                 if not plan:
-                    return (-errno.ENOENT, '', 'plan %s not found' %
-                            command['plan'])
-                ms = plan.final_state()
+                    # not a plan, does it look like a pool?
+                    osdmap = self.get_osdmap()
+                    valid_pool_names = [p['pool_name'] for p in osdmap.dump().get('pools', [])]
+                    option = command['option']
+                    if option not in valid_pool_names:
+                         return (-errno.EINVAL, '', 'option "%s" not a plan or a pool' % option)
+                    pools.append(option)
+                    ms = MappingState(osdmap, self.get("pg_dump"), 'pool "%s"' % option)
+                else:
+                    pools = plan.pools
+                    ms = plan.final_state()
             else:
                 ms = MappingState(self.get_osdmap(),
                                   self.get("pg_dump"),
                                   'current cluster')
-            return (0, self.evaluate(ms, verbose=verbose), '')
+            return (0, self.evaluate(ms, pools, verbose=verbose), '')
         elif command['prefix'] == 'balancer optimize':
             pools = []
             if 'pools' in command:
@@ -334,7 +343,7 @@ class Module(MgrModule):
             if not plan:
                 return (-errno.ENOENT, '', 'plan %s not found' % command['plan'])
             self.execute(plan)
-            self.plan_rm(plan)
+            self.plan_rm(command['plan'])
             return (0, '', '')
         else:
             return (-errno.EINVAL, '',
@@ -387,18 +396,19 @@ class Module(MgrModule):
         if name in self.plans:
             del self.plans[name]
 
-    def calc_eval(self, ms):
+    def calc_eval(self, ms, pools):
         pe = Eval(ms)
         pool_rule = {}
         pool_info = {}
         for p in ms.osdmap_dump.get('pools',[]):
+            if len(pools) and p['pool_name'] not in pools:
+                continue
             pe.pool_name[p['pool']] = p['pool_name']
             pe.pool_id[p['pool_name']] = p['pool']
             pool_rule[p['pool_name']] = p['crush_rule']
             pe.pool_roots[p['pool_name']] = []
             pool_info[p['pool_name']] = p
-        pools = pe.pool_id.keys()
-        if len(pools) == 0:
+        if len(pool_info) == 0:
             return pe
         self.log.debug('pool_name %s' % pe.pool_name)
         self.log.debug('pool_id %s' % pe.pool_id)
@@ -413,14 +423,21 @@ class Module(MgrModule):
         rootids = ms.crush.find_takes()
         roots = []
         for rootid in rootids:
-            root = ms.crush.get_item_name(rootid)
-            pe.root_ids[root] = rootid
-            roots.append(root)
             ls = ms.osdmap.get_pools_by_take(rootid)
+            want = []
+            # find out roots associating with pools we are passed in
+            for candidate in ls:
+                if candidate in pe.pool_name:
+                    want.append(candidate)
+            if len(want) == 0:
+                continue
+            root = ms.crush.get_item_name(rootid)
             pe.root_pools[root] = []
-            for poolid in ls:
+            for poolid in want:
                 pe.pool_roots[pe.pool_name[poolid]].append(root)
                 pe.root_pools[root].append(pe.pool_name[poolid])
+            pe.root_ids[root] = rootid
+            roots.append(root)
             weight_map = ms.crush.get_take_weight_osd_map(rootid)
             adjusted_map = {
                 osd: cw * osd_weight.get(osd, 1.0)
@@ -558,6 +575,7 @@ class Module(MgrModule):
                 pe.total_by_root[a]
             ) for a, b in pe.count_by_root.iteritems()
         }
+        self.log.debug('stats_by_root %s' % pe.stats_by_root)
 
 	# the scores are already normalized
         pe.score_by_root = {
@@ -567,6 +585,7 @@ class Module(MgrModule):
                 'bytes': pe.stats_by_root[r]['bytes']['score'],
             } for r in pe.total_by_root.keys()
         }
+        self.log.debug('score_by_root %s' % pe.score_by_root)
 
         # total score is just average of normalized stddevs
         pe.score = 0.0
@@ -576,8 +595,8 @@ class Module(MgrModule):
         pe.score /= 3 * len(roots)
         return pe
 
-    def evaluate(self, ms, verbose=False):
-        pe = self.calc_eval(ms)
+    def evaluate(self, ms, pools, verbose=False):
+        pe = self.calc_eval(ms, pools)
         return pe.show(verbose=verbose)
 
     def optimize(self, plan):
@@ -661,7 +680,7 @@ class Module(MgrModule):
         ms = plan.initial
         osdmap = ms.osdmap
         crush = osdmap.get_crush()
-        pe = self.calc_eval(ms)
+        pe = self.calc_eval(ms, plan.pools)
         if pe.score == 0:
             self.log.info('Distribution is already perfect')
             return False
@@ -673,8 +692,8 @@ class Module(MgrModule):
                             if b < 1.0 and b > 0.0 ]
 
         # get current compat weight-set weights
-        orig_ws = self.get_compat_weight_set_weights()
-        if orig_ws is None:
+        orig_ws = self.get_compat_weight_set_weights(ms)
+        if not orig_ws:
             return False
         orig_ws = { a: b for a, b in orig_ws.iteritems() if a >= 0 }
 
@@ -768,7 +787,7 @@ class Module(MgrModule):
             # recalc
             plan.compat_ws = copy.deepcopy(next_ws)
             next_ms = plan.final_state()
-            next_pe = self.calc_eval(next_ms)
+            next_pe = self.calc_eval(next_ms, plan.pools)
             next_misplaced = next_ms.calc_misplaced_from(ms)
             self.log.debug('Step result score %f -> %f, misplacing %f',
                            best_pe.score, next_pe.score, next_misplaced)
@@ -785,6 +804,7 @@ class Module(MgrModule):
                                next_misplaced, max_misplaced, step)
             else:
                 if next_pe.score > best_pe.score * 1.0001:
+                    bad_steps += 1
                     if bad_steps < 5 and random.randint(0, 100) < 70:
                         self.log.debug('Score got worse, taking another step')
                     else:
@@ -821,34 +841,37 @@ class Module(MgrModule):
             plan.compat_ws = {}
             return False
 
-    def get_compat_weight_set_weights(self):
-        # enable compat weight-set
-        self.log.debug('ceph osd crush weight-set create-compat')
-        result = CommandResult('')
-        self.send_command(result, 'mon', '', json.dumps({
-            'prefix': 'osd crush weight-set create-compat',
-            'format': 'json',
-        }), '')
-        r, outb, outs = result.wait()
-        if r != 0:
-            self.log.error('Error creating compat weight-set')
-            return
+    def get_compat_weight_set_weights(self, ms):
+        if not CRUSHMap.have_default_choose_args(ms.crush_dump):
+            # enable compat weight-set first
+            self.log.debug('ceph osd crush weight-set create-compat')
+            result = CommandResult('')
+            self.send_command(result, 'mon', '', json.dumps({
+                'prefix': 'osd crush weight-set create-compat',
+                'format': 'json',
+            }), '')
+            r, outb, outs = result.wait()
+            if r != 0:
+                self.log.error('Error creating compat weight-set')
+                return
 
-        result = CommandResult('')
-        self.send_command(result, 'mon', '', json.dumps({
-            'prefix': 'osd crush dump',
-            'format': 'json',
-        }), '')
-        r, outb, outs = result.wait()
-        if r != 0:
-            self.log.error('Error dumping crush map')
-            return
-        try:
-            crushmap = json.loads(outb)
-        except:
-            raise RuntimeError('unable to parse crush map')
+            result = CommandResult('')
+            self.send_command(result, 'mon', '', json.dumps({
+                'prefix': 'osd crush dump',
+                'format': 'json',
+            }), '')
+            r, outb, outs = result.wait()
+            if r != 0:
+                self.log.error('Error dumping crush map')
+                return
+            try:
+                crushmap = json.loads(outb)
+            except:
+                raise RuntimeError('unable to parse crush map')
+        else:
+            crushmap = ms.crush_dump
 
-        raw = crushmap.get('choose_args',{}).get('-1', [])
+        raw = CRUSHMap.get_default_choose_args(crushmap)
         weight_set = {}
         for b in raw:
             bucket = None
@@ -881,7 +904,7 @@ class Module(MgrModule):
 
         # compat weight-set
         if len(plan.compat_ws) and \
-           '-1' not in plan.initial.crush_dump.get('choose_args', {}):
+           not CRUSHMap.have_default_choose_args(plan.initial.crush_dump):
             self.log.debug('ceph osd crush weight-set create-compat')
             result = CommandResult('')
             self.send_command(result, 'mon', '', json.dumps({
