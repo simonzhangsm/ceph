@@ -12,10 +12,6 @@
 	path = src/erasure-code/jerasure/gf-complete
 	url = https://github.com/ceph/gf-complete.git
 	branch = v3-ceph
-[submodule "src/rocksdb"]
-	path = src/rocksdb
-	url = https://github.com/simonzhangsm/rocksdb
-	branch = simon-v5.9.2
 [submodule "ceph-erasure-code-corpus"]
 	path = ceph-erasure-code-corpus
 	url = https://github.com/ceph/ceph-erasure-code-corpus.git
@@ -23,9 +19,6 @@
 	path = src/googletest
 	url = https://github.com/ceph/googletest
 	branch = ceph-release-1.7.x
-[submodule "src/spdk"]
-	path = src/spdk
-	url = https://github.com/ceph/spdk.git
 [submodule "src/xxHash"]
 	path = src/xxHash
 	url = https://github.com/ceph/xxHash.git
@@ -39,7 +32,7 @@
 	ignore = dirty
 [submodule "src/dpdk"]
 	path = src/dpdk
-	url = https://github.com/ceph/dpdk
+	url = https://github.com/simonzhangsm/dpdk
 [submodule "src/zstd"]
 	path = src/zstd
 	url = https://github.com/facebook/zstd
@@ -52,3 +45,10 @@
 [submodule "src/rapidjson"]
 	path = src/rapidjson
 	url = https://github.com/ceph/rapidjson
+[submodule "src/rocksdb"]
+	path = src/rocksdb
+	url = https://github.com/simonzhangsm/rocksdb
+	branch = simon-v5.9.2
+[submodule "src/spdk"]
+	path = src/spdk
+	url = https://github.com/simonzhangsm/spdk
